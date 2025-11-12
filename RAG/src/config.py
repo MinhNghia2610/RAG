@@ -11,4 +11,4 @@ EMBEDDING_MODEL = "text-embedding-3-small"
 GENERATION_MODEL = "gpt-4o-mini"
 
 # API Key
-OPENAI_API_KEY = os.getenv("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")
+OPENAI_API_KEY = os.getenv("AIzaSyAtaS5M2yuqzADb6RxwNracb5HjjII1XPE")
