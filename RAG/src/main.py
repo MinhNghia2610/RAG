@@ -1,16 +1,10 @@
-from src.retriever import retrieve
-from src.generator import generate_answer
+# main.py
+# Entry point để chạy chatbot. Gọi: python -m src.main  (chạy từ thư mục gốc RAG)
 
-def chat():
-    print("🤖 Chatbot đã sẵn sàng. Gõ 'exit' để thoát.\n")
-    while True:
-        query = input("Bạn: ")
-        if query.lower() == "exit":
-            break
+from interface import run_cli
 
-        contexts = retrieve(query)
-        answer = generate_answer(contexts, query)
-        print(f"Bot: {answer}\n")
+def main():
+    run_cli()
 
 if __name__ == "__main__":
-    chat()
+    main()

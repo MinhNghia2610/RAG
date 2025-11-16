@@ -1,81 +1,76 @@
-# ============================================
-# IMPORT CÁC THƯ VIỆN CẦN THIẾT
-# ============================================
+# retriever.py
+# Tải faiss index + metadata, thực hiện truy vấn nearest neighbors
 
-import json                     # Dùng để đọc và ghi file JSON (metadata)
-import faiss                    # Thư viện FAISS (Facebook AI Similarity Search) để tìm kiếm vector hiệu quả
-import numpy as np              # Xử lý ma trận và vector số
-from openai import OpenAI       # Thư viện tương tác với API OpenAI
-from src.config import *        # Import các biến cấu hình từ file config (API key, model, đường dẫn,...)
+from config import FAISS_INDEX_PATH, METADATA_PATH, DEFAULT_TOP_K
+from utils import load_metadata, embed_texts, normalize_text
+from pathlib import Path
+import numpy as np
 
+class Retriever:
+    def __init__(self, index_path: Path = FAISS_INDEX_PATH, meta_path: Path = METADATA_PATH):
+        self.index_path = Path(index_path)
+        self.meta_path = Path(meta_path)
+        self.metadata = load_metadata(self.meta_path)
+        self.index = None
+        self.dim = None
+        self._load_index()
 
-# ============================================
-# KHỞI TẠO CLIENT OPENAI
-# ============================================
+    def _load_index(self):
+        if not self.index_path.exists():
+            raise FileNotFoundError(f"Không tìm thấy FAISS index tại {self.index_path}. Bạn có thể chạy build_embeddings.py để tạo.")
+        try:
+            import faiss
+        except Exception as e:
+            raise RuntimeError("Cần faiss (faiss-cpu) để chạy retriever. pip install faiss-cpu") from e
+        self.index = faiss.read_index(str(self.index_path))
+        # dim có thể lấy từ index.d
+        if hasattr(self.index, "d"):
+            self.dim = int(self.index.d)
+        else:
+            # thử đo bằng reconstruct (nếu hỗ trợ)
+            self.dim = None
 
-# Tạo client OpenAI sử dụng API key đã lưu trong file config
-client = OpenAI(api_key=OPENAI_API_KEY)
+    def _embed_query(self, query: str):
+        q = normalize_text(query)
+        emb = embed_texts([q])
+        # normalize as index built with normalized vectors
+        try:
+            import faiss
+            faiss.normalize_L2(emb)
+        except Exception:
+            pass
+        return emb.astype("float32")
 
+    def retrieve(self, query: str, top_k: int = DEFAULT_TOP_K):
+        """
+        Trả về danh sách kết quả: [{"score":..., "text":..., "source":...}, ...]
+        """
+        if self.index is None:
+            raise RuntimeError("Index chưa được load.")
+        emb = self._embed_query(query)
+        D, I = self.index.search(emb, top_k)
+        scores = D[0].tolist()
+        idxs = I[0].tolist()
+        results = []
+        for idx, score in zip(idxs, scores):
+            if idx < 0 or idx >= len(self.metadata):
+                continue
+            m = self.metadata[idx]
+            results.append({
+                "score": float(score),
+                "text": m.get("text", ""),
+                "source": m.get("source", "")
+            })
+        return results
 
-# ============================================
-# HÀM LẤY EMBEDDING TỪ MỘT ĐOẠN VĂN BẢN
-# ============================================
+# helper function
+_default_retriever = None
+def get_default_retriever():
+    global _default_retriever
+    if _default_retriever is None:
+        _default_retriever = Retriever()
+    return _default_retriever
 
-def get_embedding(text):
-    """
-    Hàm này nhận vào một đoạn text và trả về vector embedding của nó.
-
-    Args:
-        text (str): Chuỗi văn bản cần tạo embedding.
-
-    Returns:
-        np.array: Vector embedding có kiểu float32.
-    """
-
-    # Gửi yêu cầu tới API của OpenAI để tạo embedding cho đoạn văn bản
-    response = client.embeddings.create(
-        model=EMBEDDING_MODEL,  # Model embedding (ví dụ: "text-embedding-3-large")
-        input=text               # Văn bản cần mã hóa
-    )
-
-    # Trích xuất vector embedding từ phản hồi API và chuyển sang numpy array
-    return np.array(response.data[0].embedding, dtype=np.float32)
-
-
-# ============================================
-# HÀM TRUY XUẤT THÔNG TIN TỪ VECTOR STORE
-# ============================================
-
-def retrieve(query, top_k=3):
-    """
-    Hàm này thực hiện truy vấn (query) lên kho dữ liệu FAISS để tìm ra
-    các đoạn văn bản gần nhất (theo nghĩa ngữ nghĩa) với câu hỏi.
-
-    Args:
-        query (str): Câu hỏi hoặc truy vấn của người dùng.
-        top_k (int): Số lượng kết quả tương đồng nhất cần lấy ra (mặc định: 3).
-
-    Returns:
-        list: Danh sách metadata tương ứng với các đoạn văn bản tìm được.
-    """
-
-    # Đọc lại index FAISS từ file đã lưu (VECTOR_STORE_PATH)
-    index = faiss.read_index(VECTOR_STORE_PATH)
-
-    # Đọc file metadata chứa thông tin các đoạn văn bản gốc (metadata.json)
-    with open(METADATA_PATH, "r", encoding="utf-8") as f:
-        metadata = json.load(f)
-
-    # Tạo embedding cho câu query người dùng
-    query_vec = get_embedding(query)
-
-    # Thực hiện tìm kiếm trên index FAISS:
-    # - Đầu vào: vector của query (1 hàng, n cột)
-    # - Trả về: khoảng cách (distances) và chỉ số (indices) của các vector gần nhất
-    distances, indices = index.search(np.array([query_vec]), top_k)
-
-    # Lấy ra các metadata tương ứng với top_k chỉ số tìm được
-    results = [metadata[i] for i in indices[0]]
-
-    # Trả về danh sách kết quả (ví dụ: các đoạn văn bản hoặc tài liệu tương ứng)
-    return results
+def retrieve(query: str, top_k: int = DEFAULT_TOP_K):
+    r = get_default_retriever()
+    return r.retrieve(query, top_k=top_k)
